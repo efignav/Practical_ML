@@ -1,0 +1,175 @@
+---
+title: "Practical ML Course Project"
+author: "Enrique Figueroa"
+date: "25/10/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+### Background
+Six people using accelerometers on their bodies are asked to perform barbell lifts in 5 different ways. It have been identified 5 different ways to do it, called Class A, B, C, D and E. Only the Class A is considered correct. Many measures have been taken and been registered at the indicated datasets. The task is to train a model that predict correctly the Class based on relevant columns of the datasets.
+
+### Loading libraries and datasets
+```{r message=FALSE, warning=FALSE}
+rm(list=ls())
+
+library(caret)
+library(ggplot2); 
+library(dplyr)
+
+training <- read.csv(file="pml-training.csv", header=T)
+validation <- read.csv(file="pml-testing.csv", header=T)
+```
+
+### Preprocesing
+
+Since the training dataset has redundant summary fields we reduced to those that can have an impact on the outcome. Also, ignore some useless columns.
+```{r}
+relevant_cols= c("accel_", "gyros_", "roll_", "pitch_","yaw_", "magnet_")
+train_df = select(training, classe, starts_with(relevant_cols))
+sort(colnames(train_df) )
+```
+
+The pie below shows that the majority of participants perform incorrectly the barbell lifts (Class B, C, D, E). Only 28.4% perform the lifts correctly.
+```{r fig.height=3, fig.width=4}
+table_pie =as.data.frame(table(train_df$classe))
+colnames(table_pie) = c("Class", "Freq")
+table_pie = table_pie %>% arrange(desc(Class)) %>%
+  mutate(prop = Freq / sum(table_pie$Freq) * 100) %>%
+  mutate(ypos = cumsum(prop) - 0.5*prop )
+
+ggplot(table_pie, aes(x="", y=prop, fill=Class)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) + theme_void() + 
+  geom_text(aes(y = ypos, label = round(prop,1)), color = "white", size=6) +
+  scale_fill_brewer(palette="Set1") + ggtitle("Distribution of outcome \"classe\" (%)")
+```
+
+### Partioning the training dataset
+Now that we reduced the dataset from 160 columns to only 49 columns, we divide the huge training dataset in two parts: one for training the models (60%) and the other one for testing their performance (40%).   
+```{r}
+inTrain = createDataPartition(y=train_df$classe, p=0.6, list=FALSE)
+
+train_df = train_df[inTrain, ]; 
+test_df = train_df[-inTrain, ]
+```
+
+### Training models
+
+Five models will be tried: decision trees, random forest (rf), bagging (gbm), support vector machine (svm) and linear discriminant analysis(lda).
+
+First, we set up the cross validation parameter to 2-fold. This parameter will be used in the train function for each model.
+
+```{r}
+set.seed(7777)
+control = trainControl(method="cv", number=2, verboseIter=F)
+```
+
+### Decision Trees
+```{r}
+mod_dt = train(classe ~ ., data=train_df, method="rpart", trControl = control)
+```
+
+### Random Forests
+```{r}
+mod_rf = train(classe~., data=train_df, method="rf", trControl = control)
+```
+
+### Generalized Boosted Regression Modeling
+```{r}
+mod_gbm = train(classe~., data=train_df, method="gbm", trControl = control, verbose = F)
+```
+
+### Suppor Vector Machine
+```{r}
+mod_svm = train(classe~., data=train_df, method="svmLinear", trControl = control, verbose = F)
+```
+
+### Linear Discriminant Analysis
+```{r}
+mod_lda = train(classe ~ ., data = train_df, method = "lda", trControl = control, verbose = F)
+```
+
+### Prediction
+Once the models have been trained we predict the classes (A, B, C, D or E) on the test_df to calculate some metrics. Since the procedure is the same for the five models a function is defined previously for calculating the confusion matrix.
+
+```{r}
+pred_model = function(model, dataset){
+  mod_predict = predict(model, dataset)
+  conf_matrix = confusionMatrix(mod_predict, as.factor(dataset$classe))
+  return(conf_matrix)
+}
+```
+Then, we calculate each confusion matrix.
+```{r}
+cm_dt = pred_model(mod_dt, test_df)
+cm_rf = pred_model(mod_rf, test_df)
+cm_gbm = pred_model(mod_gbm, test_df)
+cm_svm = pred_model(mod_svm, test_df)
+cm_lda = pred_model(mod_lda, test_df)
+```
+
+### Results on testing dataset
+Based upon the prior calculated confusion matrices, we build a table that shows the accuracy of each model.
+```{r}
+
+res = round( rbind(
+  "Decision Trees" = cm_dt$overall["Accuracy"],
+  "Random Forest" = cm_rf$overall["Accuracy"],
+  "Generalized Boosting " = cm_gbm$overall["Accuracy"],
+  "Support Vector Machine" = cm_svm$overall["Accuracy"],
+  "Linear Discriminant Analysis" = cm_lda$overall["Accuracy"]
+), 2)
+
+knitr::kable(res, caption = "**Overall model accuracy**", format="simple")
+
+```
+
+Since what we are mostly interesed in calculating the Class A and not the other classes that represent mistakes, a table with relevant metrics for that Class A is composed with a function that takes the trained model as an argument.
+```{r}
+table_row = function(model, modelName){
+  result = rbind(
+  "Bal Accuracy"= round(model$byClass[1,7],2),
+  "Sensitivity"= round(model$byClass[1,1],2),
+  "Specificity"= round(model$byClass[1,2],2),
+  "Precision"= round(model$byClass[1,5],2),
+  "Recall"= round(model$byClass[1,6],2))
+  
+  result = t(as.data.frame(result))
+  rownames(result) = modelName
+
+  return(result)
+}
+
+classA_result = rbind(
+table_row(cm_dt, "Decision Trees"),
+table_row(cm_rf, "Random Forest"),
+table_row(cm_gbm, "Generalized Boosting"),
+table_row(cm_svm, "Support Vector Machine"),
+table_row(cm_lda, "Linear Discriminant Analysis") )
+
+knitr::kable(classA_result, caption = "**Class A metrics**", format="simple")
+```
+
+
+### Prediction on validation dataset
+We use random forest, the best model according to the out of sample metrics, to predict the 20 observations of the validation dataset.
+```{r}
+pred_val <- predict(mod_rf, validation)
+print(pred_val)
+
+```
+
+### Conclusion
+The out of sample metrics clearly show that the best method is Random Forest, followed by Generalized Boosted Regression model.
+
+### Appendix
+
+```{r message=FALSE, warning=FALSE}
+library(rattle)
+fancyRpartPlot(mod_dt$finalModel)
+
+```
+
